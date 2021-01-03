@@ -1,29 +1,31 @@
-/* 
- 
-Arduino Nano BLE Sense dashboard demo
-
-
-Hardware required: https://store.arduino.cc/nano-33-ble-sense
-
-1) Upload this sketch to the Arduino Nano BLE sense board 
-
-2) Open the following web page in the Chrome browser:
-https://arduino.github.io/ArduinoAI/BLESense-test-dashboard/
-
-3) Click on the green button in the web page to connect the browser to the board over BLE
-
-
-Web dashboard by D Pajak
-
-Device sketch based on example by Sandeep Mistry
-
-*/
+/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
 
 #include <Arduino_LSM9DS1.h>
-
 #include <ArduinoBLE.h>
+#include <TensorFlowLite.h>
+
+#include "tensorflow/lite/micro/micro_error_reporter.h"
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/version.h"
+
+#include "magic_wand_model_data.h"
+#include "rasterize_stroke.h"
 
 #define BLE_SENSE_UUID(val) ("4798e0f2-" val "-4d68-af64-8a8f5258404e")
+
+namespace {
 
 const int VERSION = 0x00000000;
 
@@ -33,6 +35,12 @@ constexpr int stroke_max_length = stroke_transmit_max_length * stroke_transmit_s
 constexpr int stroke_points_byte_count = 2 * sizeof(int8_t) * stroke_transmit_max_length;
 constexpr int stroke_struct_byte_count = (2 * sizeof(int32_t)) + stroke_points_byte_count;
 constexpr int moving_sample_count = 50;
+
+constexpr int raster_width = 32;
+constexpr int raster_height = 32;
+constexpr int raster_channels = 3;
+constexpr int raster_byte_count = raster_height * raster_width * raster_channels;
+int8_t raster_buffer[raster_byte_count];
 
 BLEService        service                       (BLE_SENSE_UUID("0000"));
 BLECharacteristic strokeCharacteristic          (BLE_SENSE_UUID("300a"), BLERead, stroke_struct_byte_count);
@@ -71,6 +79,19 @@ enum {
   eDrawing = 1,
   eDone = 2,
 };
+
+// Create an area of memory to use for input, output, and intermediate arrays.
+// The size of this will depend on the model you're using, and may need to be
+// determined by experimentation.
+constexpr int kTensorArenaSize = 30 * 1024;
+uint8_t tensor_arena[kTensorArenaSize];
+
+tflite::ErrorReporter* error_reporter = nullptr;
+const tflite::Model* model = nullptr;
+tflite::MicroInterpreter* interpreter = nullptr;
+
+constexpr int label_count = 10;
+const char* labels[label_count] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
 
 void SetupIMU() {
 
@@ -322,9 +343,11 @@ bool IsMoving(int samples_before) {
   return is_moving;
 }
 
-void UpdateStroke(int new_samples) {
+void UpdateStroke(int new_samples, bool* done_just_triggered) {
   constexpr int minimum_stroke_length = moving_sample_count + 10;
   constexpr float minimum_stroke_size = 0.2f;
+
+  *done_just_triggered = false;
 
   for (int i = 0; i < new_samples; ++i) {
     const int current_head = (new_samples - (i + 1));
@@ -358,8 +381,8 @@ void UpdateStroke(int new_samples) {
   
     // Only recalculate the full stroke if it's needed.
     const bool draw_last_point = ((i == (new_samples -1)) && (*stroke_state == eDrawing));
-    const bool done_just_triggered = ((old_state != eDone) && (*stroke_state == eDone));
-    if (!(done_just_triggered || draw_last_point)) {
+    *done_just_triggered = ((old_state != eDone) && (*stroke_state == eDone));
+    if (!(*done_just_triggered || draw_last_point)) {
       continue;
     }
 
@@ -460,11 +483,12 @@ void UpdateStroke(int new_samples) {
     }
     
     // If the stroke is too small, cancel it.
-    if (done_just_triggered) {
+    if (*done_just_triggered) {
       const float x_range = (x_max - x_min);
       const float y_range = (y_max - y_min);
       if ((x_range < minimum_stroke_size) &&
         (y_range < minimum_stroke_size)) {
+        *done_just_triggered = false;
         *stroke_state = eWaiting;
         *stroke_transmit_length = 0;
         stroke_length = 0;
@@ -473,10 +497,12 @@ void UpdateStroke(int new_samples) {
   }
 }
 
+}  // namespace
+
 void setup() {
   Serial.begin(9600);
 
-  //while (!Serial);
+  while (!Serial);
   Serial.println("Started");
 
   if (!IMU.begin()) {
@@ -516,6 +542,63 @@ void setup() {
   BLE.addService(service);
 
   BLE.advertise();
+
+
+    // Set up logging. Google style is to avoid globals or statics because of
+  // lifetime uncertainty, but since this has a trivial destructor it's okay.
+  static tflite::MicroErrorReporter micro_error_reporter;  // NOLINT
+  error_reporter = &micro_error_reporter;
+
+  // Map the model into a usable data structure. This doesn't involve any
+  // copying or parsing, it's a very lightweight operation.
+  model = tflite::GetModel(g_magic_wand_model_data);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    TF_LITE_REPORT_ERROR(error_reporter,
+                         "Model provided is schema version %d not equal "
+                         "to supported version %d.",
+                         model->version(), TFLITE_SCHEMA_VERSION);
+    return;
+  }
+
+  // Pull in only the operation implementations we need.
+  // This relies on a complete list of all the ops needed by this graph.
+  // An easier approach is to just use the AllOpsResolver, but this will
+  // incur some penalty in code space for op implementations that are not
+  // needed by this graph.
+  static tflite::MicroMutableOpResolver<4> micro_op_resolver;  // NOLINT
+  micro_op_resolver.AddConv2D();
+  micro_op_resolver.AddMean();
+  micro_op_resolver.AddFullyConnected();
+  micro_op_resolver.AddSoftmax();
+
+  // Build an interpreter to run the model with.
+  static tflite::MicroInterpreter static_interpreter(
+      model, micro_op_resolver, tensor_arena, kTensorArenaSize, error_reporter);
+  interpreter = &static_interpreter;
+
+  // Allocate memory from the tensor_arena for the model's tensors.
+  interpreter->AllocateTensors();
+
+  TfLiteTensor* model_input = interpreter->input(0);
+  if ((model_input->dims->size != 4) || (model_input->dims->data[0] != 1) ||
+      (model_input->dims->data[1] != raster_height) ||
+      (model_input->dims->data[2] != raster_width) ||
+      (model_input->dims->data[3] != raster_channels) ||
+      (model_input->type != kTfLiteInt8)) {
+    TF_LITE_REPORT_ERROR(error_reporter,
+                         "Bad input tensor parameters in model");
+    return;
+  }
+
+  TfLiteTensor* model_output = interpreter->output(0);
+  if ((model_output->dims->size != 2) || (model_output->dims->data[0] != 1) ||
+      (model_output->dims->data[1] != label_count) ||
+      (model_output->type != kTfLiteInt8)) {
+    TF_LITE_REPORT_ERROR(error_reporter,
+                         "Bad output tensor parameters in model");
+    return;
+  }
+
 }
 
 void loop() {
@@ -528,27 +611,73 @@ void loop() {
     Serial.println(central.address());
   }
   
-  while (central && central.connected()) {
-    const bool data_available = IMU.accelerationAvailable() || IMU.gyroscopeAvailable();
-    if (!data_available) {
-      continue;
-    }
-      
-    int accelerometer_samples_read;
-    int gyroscope_samples_read;
-    ReadAccelerometerAndGyroscope(&accelerometer_samples_read, &gyroscope_samples_read);
+  const bool data_available = IMU.accelerationAvailable() || IMU.gyroscopeAvailable();
+  if (!data_available) {
+    return;
+  }
 
-    if (gyroscope_samples_read > 0) {
-      EstimateGyroscopeDrift(current_gyroscope_drift);
-      UpdateOrientation(gyroscope_samples_read, current_gravity, current_gyroscope_drift);
-      UpdateStroke(gyroscope_samples_read);
+  int accelerometer_samples_read;
+  int gyroscope_samples_read;
+  ReadAccelerometerAndGyroscope(&accelerometer_samples_read, &gyroscope_samples_read);
+
+  bool done_just_triggered = false;
+  if (gyroscope_samples_read > 0) {
+    EstimateGyroscopeDrift(current_gyroscope_drift);
+    UpdateOrientation(gyroscope_samples_read, current_gravity, current_gyroscope_drift);
+    UpdateStroke(gyroscope_samples_read, &done_just_triggered);
+    if (central && central.connected()) {
       strokeCharacteristic.writeValue(stroke_struct_buffer, stroke_struct_byte_count);
     }
+  }
 
-    if (accelerometer_samples_read > 0) {
-      EstimateGravityDirection(current_gravity);
-      UpdateVelocity(accelerometer_samples_read, current_gravity);
+  if (accelerometer_samples_read > 0) {
+    EstimateGravityDirection(current_gravity);
+    UpdateVelocity(accelerometer_samples_read, current_gravity);
+  }
+
+  if (done_just_triggered) {
+    RasterizeStroke(stroke_points, *stroke_transmit_length, 0.6f, 0.6f, raster_width, raster_height, raster_buffer);
+    for (int y = 0; y < raster_height; ++y) {
+      char line[raster_width + 1];
+      for (int x = 0; x < raster_width; ++x) {
+        const int8_t* pixel = &raster_buffer[(y * raster_width * raster_channels) + (x * raster_channels)];
+        const int8_t red = pixel[0];
+        const int8_t green = pixel[1];
+        const int8_t blue = pixel[2];
+        char output;
+        if ((red > -128) || (green > -128) || (blue > -128)) {
+          output = '#';
+        } else {
+          output = '.';
+        }
+        line[x] = output;
+      }
+      line[raster_width] = 0;
+      Serial.println(line);
     }
+    
+    TfLiteTensor* model_input = interpreter->input(0);
+    for (int i = 0; i < raster_byte_count; ++i) {
+      model_input->data.int8[i] = raster_buffer[i];
+    }
+
+    TfLiteStatus invoke_status = interpreter->Invoke();
+    if (invoke_status != kTfLiteOk) {
+      TF_LITE_REPORT_ERROR(error_reporter, "Invoke failed");
+      return;
+    }
+   
+    TfLiteTensor* output = interpreter->output(0);
+
+    int8_t max_score;
+    int max_index;
+    for (int i = 0; i < 10; ++i) {
+      const int8_t score = output->data.int8[i];
+      if ((i == 0) || (score > max_score)) {
+        max_score = score;
+        max_index = i;
+      }
+    }
+    TF_LITE_REPORT_ERROR(error_reporter, "Found %s (%d)", labels[max_index], max_score);
   }
 }
-
