@@ -604,12 +604,14 @@ void setup() {
 void loop() {
   BLEDevice central = BLE.central();
   
-    // if a central is connected to the peripheral:
-  if (central) {
+  // if a central is connected to the peripheral:
+  static bool was_connected_last = false;  
+  if (central && !was_connected_last) {
     Serial.print("Connected to central: ");
     // print the central's BT address:
     Serial.println(central.address());
   }
+  was_connected_last = central;
   
   const bool data_available = IMU.accelerationAvailable() || IMU.gyroscopeAvailable();
   if (!data_available) {
