@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Arduino Nano BLE Sense - Web BLE test</title>
+  <title>Magic Wand Gesture Recorder</title>
   <link href="https://fonts.googleapis.com/css?family=Roboto&display=swap" rel="stylesheet">
   <style>
 
@@ -9,14 +9,23 @@
     font-family: 'Roboto', sans-serif; color: #888888; background: #000000; font-size: small;
   }
 
-  #bigButton {
+  .button {
     background-color: aqua; border: none; color: black; padding: 1px; text-align: center;
-    text-decoration: none; font-size: 6px; margin: 12px 20px; height: 15px; width: 30px;
+    text-decoration: none; font-size: 12px; margin: 12px 20px; height: 20px; width: 100px;
     border-radius: 10%; outline:none; font-family: 'Roboto', sans-serif;
+    float: left;
+  }
+    
+  #bigButton {
+    float:left;
+  }
+    
+  #downloadButton {
+    float: left;
   }
 
   .container {
-    width:960px;height:384px;margin-top:30px;margin-bottom:7.5px;  margin: 0 auto;
+    width:860px;height:384px;margin-top:30px;margin-bottom:7.5px;  margin: 0 auto; position: relative;
   }
 
   .widget {
@@ -26,8 +35,8 @@
     padding: 12px;
     margin: 6px;
     float: left;
-    width: 680px;
-    height: 680px;
+    width: 340px;
+    height: 340px;
   }
 
   .status {
@@ -40,71 +49,83 @@
   }
 
   .square {
-    width: 640px;  height: 640px;
+    width: 320px;  height: 320px;
     position: relative;
+    float: left;
   }
 
   .label {
-    height: 15px;
+    height: 20px;
+    min-width: 100px;
     display: inline;
     font-size: 15px;
+    float: left;
+  }
+  
+  .intro {
+    font-size: 15px;
+  }
+    
+  .bluetooth-label {
+    margin-top: 14px;    
+  }
+
+  .count-label {
+    margin-top: -14px;
+    float: right;
+    margin-right: 158px;
+    text-align: right;
+  }
+    
+  .gesture_store {
+    width: 400px;
+    height: 500px;
+    float: left;
+    overflow-y: scroll;
+  }
+    
+  .trash {
+    float: right;
+    font-size: x-large;
+    cursor: pointer;
   }
   </style>
 </head>
 <body>
 
   <div class="container">
-    <div class="label">&nbsp;&nbsp;IMPORTANT - first upload <a href="https://create.arduino.cc/editor/dpajak/e4128780-d76d-438f-97a4-541740cb0473/preview">sketch</a> to Arduino Nano 33 BLE Sense board<br></div>
+    <div class="intro">
+      To get started recording magic wand gestures:
+      <ul>
+        <li>Upload the <a href="https://create.arduino.cc/editor/petewarden/669b0490-720a-4d5e-a1c0-2055823f4c08/preview">Magic Wand Capture sketch</a> to an Arduino Nano BLE Sense board</li>
+        <li>Connect to the board using the Bluetooth button below.</li>
+        <li>Wave the wand to make gestures. They'll be recorded and displayed on the right.</li>
+        <li>Review the gestures, add labels by clicking on the '?', and remove mistakes.</li>
+        <li>Download the gestures as a JSON data file, ready for model training.</li>
+      </ul>
+    </div>
     <div class="status widget">
-      <button id="bigButton"></button>
-      <div class="label" id="bluetooth">Click button to connect to the board</div>
+      <a class="button" id="downloadButton">Download Data</a>
+      <button class="button" id="bigButton">Bluetooth</button>
+      <div class="bluetooth-label" id="bluetooth">Click button to connect to the board</div>
+      <div class="count-label" id="count"></div>
     </div>
 
     <div class="widget">
-      <div class="label">Stroke</div>
+      <div id="stroke_label" class="label"></div>
       <canvas id="stroke" width="640px" height="640px" class="square"></canvas>
     </div>
-
-    <div class="widget">
-      <div class="label">Orientation</div>
-      <canvas id="orientation" width="640px" height="640px" class="square"></canvas>
-    </div>
     
-    <div class="widget">
-      <div class="label">Gyroscope</div>
-      <canvas id="gyroscope" width="640px" height="640px" class="square"></canvas>
-    </div>
-
-    <div class="widget">
-      <div class="label">Acceleration</div>
-      <canvas id="acceleration" width="640px" height="640px" class="square"></canvas>
-    </div>
-
-    <div class="widget">
-      <div class="label">Position</div>
-      <canvas id="position" width="640px" height="640px" class="square"></canvas>
-    </div>
-    
-    <div class="widget">
-      <div class="label">Velocity</div>
-      <canvas id="velocity" width="640px" height="640px" class="square"></canvas>
-    </div>
-
-    <div class="widget">
-      <div class="label">Gravity</div>
-      <canvas id="gravity" width="640px" height="640px" class="square"></canvas>
+    <div class="gesture_store">
     </div>
   </div>
 </body>
 <script type="text/javascript">
-/*
-Demo showing simple dashboard of Arduino BLE sense
-Based on: https://developers.google.com/web/updates/2015/07/interact-with-ble-devices-on-the-web
-For earlier versions of Windows and Linux, you still have to go to chrome://flags/#enable-experimental-web-platform-features,
-enable the highlighted flag, and restart Chrome for now.
-*/
+// Thanks to Dom Pajak for his original Arduino BLE Sense connection demo:
+// https://arduino.github.io/ArduinoAI/BLESense-test-dashboard/
 
 var maxRecords = 64;
+var STROKE_POINT_COUNT = 160;
 
 // UI elements
 const bigButton = document.getElementById('bigButton');
@@ -116,7 +137,7 @@ if ("bluetooth" in navigator) {
   });
   // else the browser doesn't support bluetooth
 } else {
-  msg("browser not supported"); bigButton.style.backgroundColor = "red";
+  msg("Browser not supported"); bigButton.style.backgroundColor = "red";
   alert("Error: This browser doesn't support Web Bluetooth. Try using Chrome.");
 }
 
@@ -126,7 +147,7 @@ function msg(m){
 
 async function connect() {
   bigButton.style.backgroundColor="grey";
-  msg('requesting device ...');
+  msg('Requesting device ...');
 
   const device = await navigator.bluetooth.requestDevice({
     filters: [
@@ -136,16 +157,16 @@ async function connect() {
     ]
   });
 
-  msg('connecting to device ...');
+  msg('Connecting to device ...');
   device.addEventListener('gattserverdisconnected', onDisconnected);
   const server = await device.gatt.connect();
 
-  msg('getting primary service ...');
+  msg('Getting primary service ...');
   const service = await server.getPrimaryService(SERVICE_UUID);
 
   // Set up the characteristics
   for (const sensor of sensors) {
-    msg('characteristic '+sensor+"...");
+    msg('Characteristic '+sensor+"...");
     BLEsense[sensor].characteristic = await service.getCharacteristic(BLEsense[sensor].uuid);
     // Set up notification
     if (BLEsense[sensor].properties.includes("BLENotify")){
@@ -156,13 +177,27 @@ async function connect() {
     if (BLEsense[sensor].properties.includes("BLERead")){
       BLEsense[sensor].polling = setInterval(function() {
         BLEsense[sensor].characteristic.readValue().then(function(data){handleIncoming(BLEsense[sensor],data);})}
-        , 1000);
+        , 200);
       }
 
       BLEsense[sensor].rendered = false;
     }
     bigButton.style.backgroundColor = 'green';
-    msg('connected.');
+    msg('Connected.');
+  }
+  
+  function getStrokePoints(dataview, byteOffset, littleEndian) {
+    var result = [];
+    var currentOffset = byteOffset;
+    for (var i = 0; i < STROKE_POINT_COUNT; ++i) {
+      var entry = {};
+      entry.x = dataview.getInt8(currentOffset, littleEndian) / 128.0;
+      currentOffset += 1;
+      entry.y = dataview.getInt8(currentOffset, littleEndian) / 128.0;
+      currentOffset += 1;
+      result.push(entry);
+    }
+    return result;
   }
 
   function handleIncoming(sensor, dataReceived) {
@@ -171,16 +206,21 @@ async function connect() {
       "Uint8":    {fn:DataView.prototype.getUint8,    bytes:1},
       "Uint16":   {fn:DataView.prototype.getUint16,   bytes:2},
       "Int32":    {fn:DataView.prototype.getInt32,   bytes:4},
-      "Float32":  {fn:DataView.prototype.getFloat32,  bytes:4}
+      "Float32":  {fn:DataView.prototype.getFloat32,  bytes:4},
+      "StrokePoints": {fn:getStrokePoints, bytes:(STROKE_POINT_COUNT * 2 * 1)},
     };
     var packetPointer = 0,i = 0;
 
     // Read each sensor value in the BLE packet and push into the data array
-    sensor.structure.forEach(function(dataType){
-      // Lookup function to extract data for given sensor property type
-      var dataViewFn = typeMap[dataType].fn.bind(dataReceived);
-      // Read sensor ouput value - true => Little Endian
-      var unpackedValue = dataViewFn(packetPointer,true);
+    sensor.structure.forEach(function(dataType){      
+      var unpackedValue;
+      if (dataType === "StrokePoints") {
+        var dataViewFn = typeMap[dataType].fn;
+        unpackedValue = dataViewFn(dataReceived, packetPointer,true);
+      } else {
+        var dataViewFn = typeMap[dataType].fn.bind(dataReceived);
+        unpackedValue = dataViewFn(packetPointer,true);
+      }
       // Push sensor reading onto data array
       sensor.data[columns[i]].push(unpackedValue);
       // Keep array at buffer size
@@ -220,330 +260,115 @@ async function connect() {
     });
   }
 
-  </script>
-  <script>
-
-function initAccelerationGraph() {
-  var canvas = document.getElementById('acceleration');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
+var storedStrokes = [];
+  
+function storeStroke(strokePoints) {
+  var storeIndex = storedStrokes.length;
+  
+  var template =
+'      <div class="widget" id="store_' + storeIndex +'">' +
+'        <div contenteditable="true" class="label"></div>' +
+'        <div class="trash">&#128465;</div>' +
+'        <canvas width="640px" height="640px" class="square"></canvas>' +
+'      </div>';
+  var storeDiv = document.querySelector('.gesture_store');
+  var parser = new DOMParser();
+  var html = parser.parseFromString(template, 'text/html');    
+  storeDiv.prepend(html.body.firstChild);
+  
+  var strokeLabel = document.querySelector('#store_' + storeIndex +' > .label');
+  strokeLabel.innerText = "?";
+  strokeLabel.onfocus = onLabelFocus;
+  strokeLabel.onblur = onLabelBlur;
+  strokeLabel.onkeydown = onLabelKeydown;
+  
+  var strokeCanvas = document.querySelector('#store_' + storeIndex +' > canvas');
     
-function updateAccelerationGraph() {
-  var ax = BLEsense['accelerometer'].data.Ax.latest();
-  var ay = BLEsense['accelerometer'].data.Ay.latest();
-  var az = BLEsense['accelerometer'].data.Az.latest();
-
-  var canvas = document.getElementById('acceleration');
-  const ctx = canvas.getContext('2d');
+  const ctx = strokeCanvas.getContext('2d');
   ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-  var scale = canvas.height / 2;
-  
-  ctx.fillStyle = "#ff0000";
-  ctx.fillRect(100, 320, 100, (scale * ax));
+  ctx.fillRect(0, 0, strokeCanvas.width, strokeCanvas.height);  
 
-  ctx.fillStyle = "#00ff00";
-  ctx.fillRect(300, 320, 100, (scale * ay));
-
-  ctx.fillStyle = "#0000ff";
-  ctx.fillRect(500, 320, 100, (scale * az));
+  drawStrokeGraph(strokeCanvas, strokePoints, strokePoints.length);
+  
+  storedStrokes.push({
+    index: storeIndex,
+    strokePoints: strokePoints,
+    label: '',
+  });
+  onStoreChange();
+  
+  var strokeTrash = document.querySelector('#store_' + storeIndex +' > .trash');
+  strokeTrash.onclick = onTrashClick;
 }
 
-function initVelocityGraph() {
-  var canvas = document.getElementById('velocity');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-
-function updateVelocityGraph() {
-  var ax = BLEsense['velocity'].data.vx.latest();
-  var ay = BLEsense['velocity'].data.vy.latest();
-  var az = BLEsense['velocity'].data.vz.latest();
-
-  var canvas = document.getElementById('velocity');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-  var scale = canvas.height / 2;
-  
-  ctx.fillStyle = "#ff0000";
-  ctx.fillRect(100, 320, 100, (scale * ax));
-
-  ctx.fillStyle = "#00ff00";
-  ctx.fillRect(300, 320, 100, (scale * ay));
-
-  ctx.fillStyle = "#0000ff";
-  ctx.fillRect(500, 320, 100, (scale * az));
-}
-
-function initGravityGraph() {
-  var canvas = document.getElementById('gravity');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-    
-function updateGravityGraph() {
-  var ax = BLEsense['gravity'].data.x.latest();
-  var ay = BLEsense['gravity'].data.y.latest();
-  var az = BLEsense['gravity'].data.z.latest();
-
-  var canvas = document.getElementById('gravity');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-  var scale = canvas.height / 2;
-  
-  ctx.fillStyle = "#ff0000";
-  ctx.fillRect(100, 320, 100, (scale * ax));
-
-  ctx.fillStyle = "#00ff00";
-  ctx.fillRect(300, 320, 100, (scale * ay));
-
-  ctx.fillStyle = "#0000ff";
-  ctx.fillRect(500, 320, 100, (scale * az));
-}
-
-function initPositionGraph() {
-  var canvas = document.getElementById('position');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-    
-function updatePositionGraph() {
-  var canvas = document.getElementById('position');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  var posData = BLEsense['position'].data;
-  
-  var dataLength = posData.x.length;
-  var pointCount = Math.min(dataLength, 20);
-  
-  var xPoints = posData.x.slice(dataLength - pointCount, dataLength); 
-  var xMin = Math.min(...xPoints);
-  var xMax = Math.max(...xPoints);
-  var xRange = Math.max((xMax - xMin), 100.0);
-
-  var yPoints = posData.y.slice(dataLength - pointCount, dataLength); 
-  var yMin = Math.min(...yPoints);
-  var yMax = Math.max(...yPoints);
-  var yRange = Math.max((yMax - yMin), 100.0);
-
-  var zPoints = posData.z.slice(dataLength - pointCount, dataLength); 
-  var zMin = Math.min(...zPoints);
-  var zMax = Math.max(...zPoints);
-  var zRange = Math.max((zMax - zMin), 100.0);
-
-  var canvasWidth = canvas.width;
-  var canvasHeight = canvas.height;
-  
-  ctx.strokeStyle = "#ffffff";
-  ctx.beginPath();
-  for (var i = 0; i < dataLength; ++i) {
-    var x = xPoints[i];
-    var y = yPoints[i];
-    var z =zPoints[i];
-    
-    var xCanvas = ((y - yMin) / yRange) * canvasWidth;
-    var yCanvas = (0.0 + ((z - zMin) / zRange)) * canvasHeight;
-    
-    if (i === 0) {
-      ctx.moveTo(xCanvas, yCanvas);
-    } else if (i == (dataLength - 1)) {
-      ctx.lineTo(xCanvas+5, yCanvas+5);
-      ctx.lineTo(xCanvas-5, yCanvas-5);
-      ctx.moveTo(xCanvas+5, yCanvas-5);
-      ctx.moveTo(xCanvas-5, yCanvas+5);      
-    } else {
-      ctx.lineTo(xCanvas, yCanvas);
-    }
+function onLabelFocus(event) {
+  if (event.target.innerText === '?') {
+    event.target.innerText = '';
   }
-  ctx.stroke();
 }
-    
-function initGyroscopeGraph() {
-  var canvas = document.getElementById('gyroscope');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-    
-function updateGyroscopeGraph() {
-  var rx = BLEsense['gyroscope'].data.x.latest();
-  var ry = BLEsense['gyroscope'].data.y.latest();
-  var rz = BLEsense['gyroscope'].data.z.latest();
-
-  var dx = BLEsense['gyroscopeDrift'].data.x.latest();
-  var dy = BLEsense['gyroscopeDrift'].data.y.latest();
-  var dz = BLEsense['gyroscopeDrift'].data.z.latest();
-
-  var x = rx - dx;
-  var y = ry - dy;
-  var z = rz - dz;
   
-  var canvas = document.getElementById('gyroscope');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-  var scale = canvas.height / 100;
-  
-  ctx.fillStyle = "#ff0000";
-  ctx.fillRect(100, 320, 100, (scale * x));
-
-  ctx.fillStyle = "#00ff00";
-  ctx.fillRect(300, 320, 100, (scale * y));
-
-  ctx.fillStyle = "#0000ff";
-  ctx.fillRect(500, 320, 100, (scale * z));
+function onLabelBlur(event) {
+  var parent = event.target.parentElement;
+  var id = parent.id;
+  var index = Number(id.replace('store_', ''));
+  var entry = storedStrokes.find(entry => entry.index === index);
+  entry.label = event.target.innerText;
+  onStoreChange();
 }
 
-function initOrientationGraph() {
-  var canvas = document.getElementById('orientation');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+function onLabelKeydown(event) {
+  if (event.keyCode == 13) {
+    event.preventDefault();
+    event.target.blur();
+  }  
 }
-    
-function mean(sequence) {
-  var total = 0;
-  for (var i = 0; i < sequence.length; ++i) {
-    total += sequence[i]; 
-  }
-  return total / sequence.length;
+
+function onTrashClick(event) {
+  var parent = event.target.parentElement;
+  var id = parent.id;
+  parent.remove();
+
+  var index = Number(id.replace('store_', ''));
+  storedStrokes = storedStrokes.filter(entry => entry.index !== index);
+  onStoreChange();
 }
-    
-function updateOrientationGraph() {
-  var canvas = document.getElementById('orientation');
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);  
   
-  var orientationData = BLEsense['orientation'].data;
-  
-  var dataLength = orientationData.x.length;
-  var pointCount = Math.min(dataLength, 20);
+function onStoreChange() {
+  var data = {
+    strokes: storedStrokes,
+  };
+  var dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data));
 
-  var xPoints = orientationData.x.slice(dataLength - pointCount, dataLength); 
-  var xMin = Math.min(...xPoints);
-  var xMax = Math.max(...xPoints);
-  var xMean = mean(xPoints);
-  var xRange = 7.0;
-
-  var yPoints = orientationData.y.slice(dataLength - pointCount, dataLength); 
-  var yMin = Math.min(...yPoints);
-  var yMax = Math.max(...yPoints);
-  var yMean = mean(yPoints);
-  var yRange = 7.0;
-
-  var zPoints = orientationData.z.slice(dataLength - pointCount, dataLength); 
-  var zMin = Math.min(...zPoints);
-  var zMax = Math.max(...zPoints);
-  var zMean = mean(zPoints);
-  var zRange = 7.0;
-
-  var canvasWidth = canvas.width;
-  var canvasHeight = canvas.height;
-  var halfHeight = canvasHeight / 2;
-  var halfWidth = canvasWidth / 2;
-    
-  var gy = BLEsense['gravity'].data.y.latest();
-  var gz = BLEsense['gravity'].data.z.latest();
-  var gmag = Math.max(Math.sqrt((gy * gy) + (gz * gz)), 0.0001);
-  var ngy = gy / gmag;
-  var ngz = gz / gmag;
+  var downloadButton = document.querySelector('#downloadButton');
+  downloadButton.setAttribute('href', dataStr);
+  downloadButton.setAttribute('download', 'wanddata.json');
   
-  var xaxisz = ngz;
-  var xaxisy = ngy;
-
-  var yaxisz = -ngy;
-  var yaxisy = ngz;
-  
-  ctx.strokeStyle = "#ffffff";
-  ctx.beginPath();
-  for (var i = 0; i < dataLength; ++i) {
-    var x = xPoints[i];
-    var y = yPoints[i];
-    var z = zPoints[i];
-    
-    var nx = (x - xMean) / xRange;
-    var ny = (y - yMean) / yRange;
-    var nz = (z - zMean) / zRange;
-    
-    var xaxis = (xaxisz * nz) + (xaxisy * ny);
-    var yaxis = (yaxisz * nz) + (yaxisy * ny);
-    
-    var xCanvas = halfWidth - (xaxis * halfWidth);
-    var yCanvas = halfHeight - (yaxis * halfHeight);
-    
-    if (i === 0) {
-      ctx.moveTo(xCanvas, yCanvas);
-    } else if (i == (dataLength - 1)) {
-      ctx.lineTo(xCanvas+5, yCanvas+5);
-      ctx.lineTo(xCanvas-5, yCanvas-5);
-      ctx.moveTo(xCanvas+5, yCanvas-5);
-      ctx.moveTo(xCanvas-5, yCanvas+5);      
-    } else {
-      ctx.lineTo(xCanvas, yCanvas);
-    }
-  }
-  ctx.stroke();
-  
-  ctx.strokeStyle = "#ff0000";
-  ctx.beginPath();
-  ctx.lineTo(halfWidth, halfHeight);
-  
-  var gxCanvas = halfWidth - (gy * halfWidth);
-  var gyCanvas = halfHeight - (gz * halfHeight);
-  ctx.lineTo(gxCanvas, gyCanvas);
-  ctx.stroke();  
+  var count = document.querySelector('#count');
+  count.innerText = storedStrokes.length;
 }
-    
+  
 function initStrokeGraph() {
   var canvas = document.getElementById('stroke');
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = "#111111";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
-    
-function updateStrokeGraph() {
-  var canvas = document.getElementById('stroke');
+
+function drawStrokeGraph(canvas, strokePoints, strokeDataLength) {
   const ctx = canvas.getContext('2d');
 
-  var strokeData = BLEsense['stroke'].data;
-  var strokeDataLength = strokeData.length.latest();
-  var strokeState = strokeData.state.latest();
-
-  if (strokeState !== 2) {
-    return;
-  }
-  
   var canvasWidth = canvas.width;
   var canvasHeight = canvas.height;
   var halfHeight = canvasHeight / 2;
   var halfWidth = canvasWidth / 2;
-
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);  
-          
+  
   ctx.strokeStyle = "#ffffff";
   ctx.beginPath();
   for (var i = 0; i < strokeDataLength; ++i) {
-    var xIndex = 'x' + i;
-    var yIndex = 'y' + i;
-    var x = strokeData[xIndex].latest();
-    var y = strokeData[yIndex].latest();
+    var x = strokePoints[i].x;
+    var y = strokePoints[i].y;
     
-    var xCanvas = halfWidth - (x * halfWidth);
+    var xCanvas = halfWidth + (x * halfWidth);
     var yCanvas = halfHeight - (y * halfHeight);
     
     if (i === 0) {
@@ -559,103 +384,60 @@ function updateStrokeGraph() {
   }
   ctx.stroke();  
 }
+  
+var previousStrokeState = 0;
+  
+function updateStrokeGraph() {
+  var strokeData = BLEsense['stroke'].data;
+  var strokeDataLength = strokeData.length.latest();
+  var strokeState = strokeData.state.latest();
+  var strokePoints = strokeData.strokePoints.latest();
+  strokePoints = strokePoints.slice(0, strokeDataLength);
+  
+  if ((strokeState == 2) && (previousStrokeState != 2)) {
+    storeStroke(strokePoints); 
+  }
+  previousStrokeState = strokeState;
+  
+  var label = document.getElementById('stroke_label');
+  if (strokeState == 0) {
+    label.innerText = "Waiting for gesture";
+  } else if (strokeState == 1) {
+    label.innerText = "Drawing";    
+  } else {
+    label.innerText = "Done";    
+  }
+  
+  var canvas = document.getElementById('stroke');
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = "#111111";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);  
+
+  if (strokeState === 1) {
+    drawStrokeGraph(canvas, strokePoints, strokeDataLength);
+  }
+}
 
 var BLEsense =
 {
-  accelerometer:
-  {
-    uuid: '6fbe1da7-3001-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'Ax':[],'Ay':[],'Az':[]},
-  },
-  velocity:
-  {
-    uuid: '6fbe1da7-3005-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'vx':[],'vy':[],'vz':[]},
-  },
-  position:
-  {
-    uuid: '6fbe1da7-3004-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'x':[],'y':[],'z':[]},
-  },
-  gravity:
-  {
-    uuid: '6fbe1da7-3006-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'x':[],'y':[],'z':[]},
-  },
-  gyroscope:
-  {
-    uuid: '6fbe1da7-3007-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'x':[],'y':[],'z':[]},
-  },
-  orientation:
-  {
-    uuid: '6fbe1da7-3008-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'x':[],'y':[],'z':[]},
-  },
-  gyroscopeDrift:
-  {
-    uuid: '6fbe1da7-3009-44de-92c4-bb6e04fb0212',
-    properties: ['BLENotify'],
-    structure: ['Float32','Float32','Float32'],
-    data: {'x':[],'y':[],'z':[]},
-  },
   stroke:
   {
-    uuid: '6fbe1da7-300a-44de-92c4-bb6e04fb0212',
+    uuid: '4798e0f2-300a-4d68-af64-8a8f5258404e',
     properties: ['BLERead'], // BLENotify only gives use the first 20 bytes.
     structure: [
       'Int32', 'Int32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32',
-      'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32', 'Float32','Float32'
+      'StrokePoints',
     ],
     data: {
       'state': [], 'length': [],
-      'x0':[], 'y0':[], 'x1':[], 'y1':[], 'x2':[],'y2':[], 'x3':[], 'y3':[], 'x4':[], 'y4':[],
-      'x5':[], 'y5':[], 'x6':[], 'y6':[], 'x7':[],'y7':[], 'x8':[], 'y8':[], 'x9':[], 'y9':[],
-      'x10':[], 'y10':[], 'x11':[], 'y11':[], 'x12':[],'y12':[], 'x13':[], 'y13':[], 'x14':[], 'y14':[],
-      'x15':[], 'y15':[], 'x16':[], 'y16':[], 'x17':[],'y17':[], 'x18':[], 'y18':[], 'x19':[], 'y19':[],
-      'x20':[], 'y20':[], 'x21':[], 'y21':[], 'x22':[],'y22':[], 'x23':[], 'y23':[], 'x24':[], 'y24':[],
-      'x25':[], 'y25':[], 'x26':[], 'y26':[], 'x27':[],'y27':[], 'x28':[], 'y28':[], 'x29':[], 'y29':[],
-      'x30':[], 'y30':[], 'x31':[], 'y31':[], 'x32':[],'y32':[], 'x33':[], 'y33':[], 'x34':[], 'y34':[],
-      'x35':[], 'y35':[], 'x36':[], 'y36':[], 'x37':[],'y37':[], 'x38':[], 'y38':[], 'x39':[], 'y39':[],
+      'strokePoints': [],
     },
     onUpdate: updateStrokeGraph,
   },
-//  strokeLength:
-//  {
-//    uuid: '6fbe1da7-300b-44de-92c4-bb6e04fb0212',
-//    properties: ['BLENotify'],
-//    structure: ['Int32'],
-//    data: {'x':[]},
-//  },
-//  strokeState:
-//  {
-//    uuid: '6fbe1da7-300c-44de-92c4-bb6e04fb0212',
-//    properties: ['BLENotify'],
-//    structure: ['Int32'],
-//    data: {'x':[]},
-//  }
 };
 const sensors = Object.keys(BLEsense);
-const SERVICE_UUID = '6fbe1da7-0000-44de-92c4-bb6e04fb0212';
+const SERVICE_UUID = '4798e0f2-0000-4d68-af64-8a8f5258404e';
 var bytesReceived = 0;
 var bytesPrevious = 0;
     
@@ -679,31 +461,12 @@ Array.prototype.latest = function(){return this[this.length - 1];};
         BLEsense[sensor].rendered = true;
       }
     }
-    if (skip_frame == false){ // TODO update with fuction to iterate object with viz function as a property
-//      var x = BLEsense['gyroscope'].data.x.latest();
-//      var y = BLEsense['gyroscope'].data.y.latest();
-//      var z = BLEsense['gyroscope'].data.z.latest();
-//      msg("x=" + x + ", y=" + y + ", z=" + z);
-      
-//      updateAccelerationGraph();
-//      updateVelocityGraph();
-//      updateGravityGraph();
-//      updatePositionGraph();
-//      updateGyroscopeGraph();
-      updateOrientationGraph();
-//      updateStrokeGraph();
-      
+    if (skip_frame == false){ // TODO update with fuction to iterate object with viz function as a property      
       skip_frame = true; // render alternate frames = 30fps
     } else {skip_frame=false;}
     requestAnimationFrame(draw);
   }
   
-//  initAccelerationGraph();
-//  initVelocityGraph();
-//  initGravityGraph();
-//  initPositionGraph();
-//  initGyroscopeGraph();
-  initOrientationGraph();
   initStrokeGraph();
     
   requestAnimationFrame(draw);
