@@ -150,6 +150,7 @@ async function connect() {
   msg('Requesting device ...');
 
   const device = await navigator.bluetooth.requestDevice({
+     acceptAllDevices: true
 //    filters: [
 //      {
 //        services: [SERVICE_UUID] // SERVICE_UUID
