@@ -3,6 +3,7 @@
 <head>
   <title>Magic Wand Gesture Recorder</title>
   <link href="https://fonts.googleapis.com/css?family=Roboto&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"> </script>
   <style>
 
   body {
@@ -267,6 +268,7 @@ function storeStroke(strokePoints) {
   var template =
 '      <div class="widget" id="store_' + storeIndex +'">' +
 '        <div contenteditable="true" class="label"></div>' +
+'        <div class="prediction"></div>' +
 '        <div class="trash">&#128465;</div>' +
 '        <canvas width="640px" height="640px" class="square"></canvas>' +
 '        <canvas width="320px" height="320px" class="rasterized"></canvas>' +
@@ -282,21 +284,27 @@ function storeStroke(strokePoints) {
   strokeLabel.onblur = onLabelBlur;
   strokeLabel.onkeydown = onLabelKeydown;
   
+  // Update stroke.
   var strokeCanvas = document.querySelector('#store_' + storeIndex + ' > .square');
-    
   const strokeCtx = strokeCanvas.getContext('2d');
   strokeCtx.fillStyle = "#111111";
   strokeCtx.fillRect(0, 0, strokeCanvas.width, strokeCanvas.height);  
-
   drawStrokeGraph(strokeCanvas, strokePoints, strokePoints.length);
 
+  // Rasterization.
   var rasterizedCanvas = document.querySelector('#store_' + storeIndex + ' > .rasterized');
   const rasterizedCtx = rasterizedCanvas.getContext('2d');
   rasterizedCtx.fillStyle = "#111111";
   rasterizedCtx.fillRect(0, 0, rasterizedCanvas.width, rasterizedCanvas.height);
-
   rasterized_strokes = rasterize_stroke(strokePoints, .5, .5, 32, 32);
   drawRasterizedStroke(rasterizedCanvas, rasterized_strokes, 32, 32);
+
+  // Predict.
+  let model_input = tf.tensor(rasterized_strokes).reshape([1, 32,32,3]).div(255.);
+  let predicted = model.predict(model_input);
+  let result = predicted.flatten().argMax().dataSync();
+  var prediction_label =  document.querySelector('#store_' + storeIndex + ' > .prediction');
+  prediction_label.innerHTML = `Model prediction: ${result}`;
 
   storedStrokes.push({
     index: storeIndex,
@@ -612,5 +620,13 @@ Array.prototype.latest = function(){return this[this.length - 1];};
   initStrokeGraph();
     
   requestAnimationFrame(draw);
+
+  let model;
+  async function load_model() {
+    console.log('Loading model..');
+    model = await tf.loadLayersModel('./tfjs/model.json');
+  }
+
+  load_model();
   </script>
   </html>
