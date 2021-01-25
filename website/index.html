@@ -145,21 +145,39 @@ if ("bluetooth" in navigator) {
   alert("Error: This browser doesn't support Web Bluetooth. Try using Chrome.");
 }
 
-function download(filename, text) {
-    var element = document.createElement('a');
-    element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
-    element.setAttribute('download', filename);
+// From https://stackoverflow.com/a/62176999: Begin
+function downloadURL (data, fileName) {
+  const a = document.createElement('a')
+  a.href = data
+  a.download = fileName
+  document.body.appendChild(a)
+  a.style.display = 'none'
+  a.click()
+  a.remove()
+}
 
-    element.style.display = 'none';
-    document.body.appendChild(element);
+function downloadBlob (data, fileName, mimeType) {
+  const blob = new Blob([data], {
+    type: mimeType
+  })
+  const url = window.URL.createObjectURL(blob)
+  downloadURL(url, fileName)
+  setTimeout(() => window.URL.revokeObjectURL(url), 1000)
+}
+// From https://stackoverflow.com/a/62176999: End
 
-    element.click();
-
-    document.body.removeChild(element);
+function updateBuffer(buffer, content) {
+  console.assert(buffer.dataLength() / 4 >= content.length)
+  for(let i=0; i<content.length; i++){
+      let offset = 4
+      buffer.bb.writeFloat32(buffer.bb.__vector(buffer.bb_pos + offset) + i * 4, content[i])
+  }
 }
 
 downloadModelButton.addEventListener('click', function(event) {
-  download('model.tflite', 'hi');
+  let b = fb_model.buffers(7)  // Last FC layer.
+  updateBuffer(b, [1,2,3,4,5])
+  downloadBlob(b.bb.bytes_, 'model.tflite', 'application/octet-stream');
 });
 
 function msg(m){
@@ -646,6 +664,7 @@ Array.prototype.latest = function(){return this[this.length - 1];};
   let fb_model;
 
   async function load_tflite_model(path) {
+    // Alternative we could also use `FileReader`
     let data = await fetch('lite/float.tflite')
     let buffer = await data.arrayBuffer()
     let typed = new Uint8Array(buffer)
