@@ -176,7 +176,7 @@ function updateBuffer(buffer, content) {
 
 downloadModelButton.addEventListener('click', function(event) {
   let b = fb_model.buffers(7)  // Last FC layer.
-  updateBuffer(b, [1,2,3,4,5])
+  updateBuffer(b, model.layers[15].getWeights()[0].dataSync())
   downloadBlob(b.bb.bytes_, 'model.tflite', 'application/octet-stream');
 });
 
