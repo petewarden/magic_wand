@@ -502,7 +502,6 @@ void UpdateStroke(int new_samples, bool* done_just_triggered) {
 void setup() {
   Serial.begin(9600);
 
-  while (!Serial);
   Serial.println("Started");
 
   if (!IMU.begin()) {
