@@ -3,6 +3,9 @@
 <head>
   <title>Magic Wand Gesture Recorder</title>
   <link href="https://fonts.googleapis.com/css?family=Roboto&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"> </script>
+  <script src="lite/flatbuffers.js"></script>
+  <script src="lite/schema_generated.js"></script>
   <style>
 
   body {
@@ -36,7 +39,6 @@
     margin: 6px;
     float: left;
     width: 340px;
-    height: 340px;
   }
 
   .status {
@@ -105,6 +107,7 @@
       </ul>
     </div>
     <div class="status widget">
+      <a class="button" id="downloadModelButton">Download model</a>
       <a class="button" id="downloadButton">Download Data</a>
       <button class="button" id="bigButton">Bluetooth</button>
       <div class="bluetooth-label" id="bluetooth">Click button to connect to the board</div>
@@ -130,6 +133,7 @@ var STROKE_POINT_COUNT = 160;
 // UI elements
 const bigButton = document.getElementById('bigButton');
 const BLEstatus = document.getElementById('bluetooth');
+const downloadModelButton = document.getElementById('downloadModelButton');
 
 if ("bluetooth" in navigator) {
   bigButton.addEventListener('click', function(event) {
@@ -140,6 +144,41 @@ if ("bluetooth" in navigator) {
   msg("Browser not supported"); bigButton.style.backgroundColor = "red";
   alert("Error: This browser doesn't support Web Bluetooth. Try using Chrome.");
 }
+
+// From https://stackoverflow.com/a/62176999: Begin
+function downloadURL (data, fileName) {
+  const a = document.createElement('a')
+  a.href = data
+  a.download = fileName
+  document.body.appendChild(a)
+  a.style.display = 'none'
+  a.click()
+  a.remove()
+}
+
+function downloadBlob (data, fileName, mimeType) {
+  const blob = new Blob([data], {
+    type: mimeType
+  })
+  const url = window.URL.createObjectURL(blob)
+  downloadURL(url, fileName)
+  setTimeout(() => window.URL.revokeObjectURL(url), 1000)
+}
+// From https://stackoverflow.com/a/62176999: End
+
+function updateBuffer(buffer, content) {
+  console.assert(buffer.dataLength() / 4 >= content.length)
+  for(let i=0; i<content.length; i++){
+      let offset = 4
+      buffer.bb.writeFloat32(buffer.bb.__vector(buffer.bb_pos + offset) + i * 4, content[i])
+  }
+}
+
+downloadModelButton.addEventListener('click', function(event) {
+  let b = fb_model.buffers(7)  // Last FC layer.
+  updateBuffer(b, model.layers[15].getWeights()[0].dataSync())
+  downloadBlob(b.bb.bytes_, 'model.tflite', 'application/octet-stream');
+});
 
 function msg(m){
   BLEstatus.innerHTML = m;
@@ -268,8 +307,10 @@ function storeStroke(strokePoints) {
   var template =
 '      <div class="widget" id="store_' + storeIndex +'">' +
 '        <div contenteditable="true" class="label"></div>' +
+'        <div class="prediction"></div>' +
 '        <div class="trash">&#128465;</div>' +
 '        <canvas width="640px" height="640px" class="square"></canvas>' +
+'        <canvas width="320px" height="320px" class="rasterized"></canvas>' +
 '      </div>';
   var storeDiv = document.querySelector('.gesture_store');
   var parser = new DOMParser();
@@ -282,14 +323,28 @@ function storeStroke(strokePoints) {
   strokeLabel.onblur = onLabelBlur;
   strokeLabel.onkeydown = onLabelKeydown;
   
-  var strokeCanvas = document.querySelector('#store_' + storeIndex +' > canvas');
-    
-  const ctx = strokeCanvas.getContext('2d');
-  ctx.fillStyle = "#111111";
-  ctx.fillRect(0, 0, strokeCanvas.width, strokeCanvas.height);  
-
+  // Update stroke.
+  var strokeCanvas = document.querySelector('#store_' + storeIndex + ' > .square');
+  const strokeCtx = strokeCanvas.getContext('2d');
+  strokeCtx.fillStyle = "#111111";
+  strokeCtx.fillRect(0, 0, strokeCanvas.width, strokeCanvas.height);  
   drawStrokeGraph(strokeCanvas, strokePoints, strokePoints.length);
-  
+
+  // Rasterization.
+  var rasterizedCanvas = document.querySelector('#store_' + storeIndex + ' > .rasterized');
+  const rasterizedCtx = rasterizedCanvas.getContext('2d');
+  rasterizedCtx.fillStyle = "#111111";
+  rasterizedCtx.fillRect(0, 0, rasterizedCanvas.width, rasterizedCanvas.height);
+  rasterized_strokes = rasterize_stroke(strokePoints, .5, .5, 32, 32);
+  drawRasterizedStroke(rasterizedCanvas, rasterized_strokes, 32, 32);
+
+  // Predict.
+  let model_input = tf.tensor(rasterized_strokes).reshape([1, 32,32,3]).div(255.);
+  let predicted = model.predict(model_input);
+  let result = predicted.flatten().argMax().dataSync();
+  var prediction_label =  document.querySelector('#store_' + storeIndex + ' > .prediction');
+  prediction_label.innerHTML = `Model prediction: ${result}`;
+
   storedStrokes.push({
     index: storeIndex,
     strokePoints: strokePoints,
@@ -300,6 +355,128 @@ function storeStroke(strokePoints) {
   var strokeTrash = document.querySelector('#store_' + storeIndex +' > .trash');
   strokeTrash.onclick = onTrashClick;
 }
+
+// Begin: Code borrowed from https://github.com/petewarden/magic_wand/blob/main/train/train_magic_wand_model.ipynb
+FIXED_POINT = 256
+
+function mul_fp(a, b) {
+  return (a * b) / FIXED_POINT
+}
+
+function div_fp(a, b) {
+  if (b == 0) {
+    b = 1;
+  }
+  return (a * FIXED_POINT) / b
+}
+
+function float_to_fp(a) {
+  return Math.floor(a * FIXED_POINT)
+}
+
+function norm_to_coord_fp(a, range_fp, half_size_fp) {
+  a_fp = float_to_fp(a)
+  norm_fp = div_fp(a_fp, range_fp)
+  return mul_fp(norm_fp, half_size_fp) + half_size_fp
+}
+
+function round_fp_to_int(a) {
+  return Math.floor((a + (FIXED_POINT / 2)) / FIXED_POINT)
+}
+
+function gate(a, min, max) {
+  if (a < min) {
+    return min
+  } else if (a > max) {
+    return max
+  } else {
+    return a
+  }
+}
+
+function rasterize_stroke(stroke_points, x_range, y_range, width, height) {
+  num_channels = 3
+  buffer_byte_count = height * width * num_channels
+  buffer = new Uint8Array(buffer_byte_count)
+
+  width_fp = width * FIXED_POINT
+  height_fp = height * FIXED_POINT
+  half_width_fp = width_fp / 2
+  half_height_fp = height_fp / 2
+  x_range_fp = float_to_fp(x_range)
+  y_range_fp = float_to_fp(y_range)
+
+  t_inc_fp = FIXED_POINT / stroke_points.length
+
+  one_half_fp = (FIXED_POINT / 2)
+
+  for (let point_index = 0; point_index < stroke_points.length - 1; point_index++) {
+    start_point = stroke_points[point_index]
+    end_point = stroke_points[point_index + 1]
+    start_x_fp = norm_to_coord_fp(start_point["x"], x_range_fp, half_width_fp)
+    start_y_fp = norm_to_coord_fp(-start_point["y"], y_range_fp, half_height_fp)
+    end_x_fp = norm_to_coord_fp(end_point["x"], x_range_fp, half_width_fp)
+    end_y_fp = norm_to_coord_fp(-end_point["y"], y_range_fp, half_height_fp)
+    delta_x_fp = end_x_fp - start_x_fp
+    delta_y_fp = end_y_fp - start_y_fp
+
+    t_fp = point_index * t_inc_fp
+    if (t_fp < one_half_fp) {
+      local_t_fp = div_fp(t_fp, one_half_fp)
+      one_minus_t_fp = FIXED_POINT - local_t_fp
+      red = round_fp_to_int(one_minus_t_fp * 255)
+      green = round_fp_to_int(local_t_fp * 255)
+      blue = 0
+    }
+    else {
+      local_t_fp = div_fp(t_fp - one_half_fp, one_half_fp)
+      one_minus_t_fp = FIXED_POINT - local_t_fp
+      red = 0
+      green = round_fp_to_int(one_minus_t_fp * 255)
+      blue = round_fp_to_int(local_t_fp * 255)
+    }
+    red = gate(red, 0, 255)
+    green = gate(green, 0, 255)
+    blue = gate(blue, 0, 255)
+
+    if (Math.abs(delta_x_fp) > Math.abs(delta_y_fp)) {
+      line_length = Math.abs(round_fp_to_int(delta_x_fp))
+
+      if (delta_x_fp > 0) {
+        x_inc_fp = 1 * FIXED_POINT
+        y_inc_fp = div_fp(delta_y_fp, delta_x_fp)
+      }
+      else {
+        x_inc_fp = -1 * FIXED_POINT
+        y_inc_fp = -div_fp(delta_y_fp, delta_x_fp)
+      }
+    }
+    else {
+      line_length = Math.abs(round_fp_to_int(delta_y_fp))
+      if (delta_y_fp > 0) {
+        y_inc_fp = 1 * FIXED_POINT
+        x_inc_fp = div_fp(delta_x_fp, delta_y_fp)
+      }
+      else {
+        y_inc_fp = -1 * FIXED_POINT
+        x_inc_fp = -div_fp(delta_x_fp, delta_y_fp)
+      }
+    }
+    for (let i = 0; i < (line_length + 1); i++) {
+      x_fp = start_x_fp + (i * x_inc_fp)
+      y_fp = start_y_fp + (i * y_inc_fp)
+      x = round_fp_to_int(x_fp)
+      y = round_fp_to_int(y_fp)
+      if ((x < 0) || (x >= width) || (y < 0) || (y >= height)) { continue }
+      buffer_index = (y * width * num_channels) + (x * num_channels)
+      buffer[buffer_index + 0] = red
+      buffer[buffer_index + 1] = green
+      buffer[buffer_index + 2] = blue
+    }
+  }
+  return buffer;
+}
+// End: Code borrowed from https://github.com/petewarden/magic_wand/blob/main/train/train_magic_wand_model.ipynb
 
 function onLabelFocus(event) {
   if (event.target.innerText === '?') {
@@ -352,6 +529,18 @@ function initStrokeGraph() {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = "#111111";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawRasterizedStroke(canvas, buffer, height, width) {
+  const ctx = canvas.getContext('2d');
+  for (var i = 0; i < width; i++) {
+    for (var j = 0; j < height; j++) {
+      const idx = (i * height + j) * 3;
+      ctx.fillStyle = `rgb(${buffer[idx]},${buffer[idx + 1]},${buffer[idx + 2]})`;
+      const scale = 5;
+      ctx.fillRect(j * scale, i * scale, 1 * scale, 1 * scale);
+    }
+  }
 }
 
 function drawStrokeGraph(canvas, strokePoints, strokeDataLength) {
@@ -470,5 +659,26 @@ Array.prototype.latest = function(){return this[this.length - 1];};
   initStrokeGraph();
     
   requestAnimationFrame(draw);
+
+  let model;
+  let fb_model;
+
+  async function load_tflite_model(path) {
+    // Alternative we could also use `FileReader`
+    let data = await fetch('lite/float.tflite')
+    let buffer = await data.arrayBuffer()
+    let typed = new Uint8Array(buffer)
+    let buf = new flatbuffers.ByteBuffer(typed)
+    let model = tflite.Model.getRootAsModel(buf)
+    return model
+  }
+
+  async function load_model() {
+    console.log('Loading model..');
+    model = await tf.loadLayersModel('./tfjs/model.json');
+    fb_model = await load_tflite_model('lite/float.tflite');
+  }
+
+  load_model();
   </script>
   </html>
